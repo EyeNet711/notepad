@@ -247,6 +247,34 @@ button { cursor: pointer; }
   background-attachment: local;
 }
 .view a { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
+.ed-body { overflow-y: auto; }
+.imgs { display: flex; flex-wrap: wrap; gap: 8px; padding-top: 6px; flex: none; }
+.img-item { position: relative; }
+.img-item img { height: 96px; max-width: 170px; width: auto; object-fit: cover; border-radius: 6px; border: 1px solid var(--line); cursor: zoom-in; display: block; background: var(--paper); }
+.img-item .note-x { position: absolute; right: 4px; top: 4px; }
+.img-msg { font-size: 12px; color: var(--ink-soft); flex: none; }
+.lb { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.85); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; z-index: 50; padding: 16px; }
+.lb img { max-width: 100%; max-height: 80vh; border-radius: 6px; }
+.ed-body { overflow-y: auto; }
+.meta-row, .title-in { flex: none; }
+.imgs { flex: none; display: flex; flex-wrap: wrap; align-items: flex-start; }
+.imgs:empty { display: none; }
+.img-frame {
+  position: relative; min-width: 60px; min-height: 60px; margin: 0 8px 8px 0;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--paper);
+}
+.img-frame img { display: block; width: 100%; height: auto; border-radius: 5px; -webkit-user-drag: none; }
+.img-frame .miss { display: block; padding: 18px 8px; font-size: 12px; color: var(--ink-soft); text-align: center; }
+.img-bar { position: absolute; top: 4px; right: 4px; display: flex; gap: 4px; }
+.img-bar button {
+  border: 1px solid var(--line); background: var(--sheet); color: var(--ink);
+  border-radius: 5px; padding: 1px 8px; font-size: 12px; line-height: 1.5; opacity: 0.92;
+}
+.img-bar button.armed { background: var(--bad); border-color: var(--bad); color: #fff; }
+.img-grip {
+  position: absolute; right: -1px; bottom: -1px; width: 26px; height: 26px; cursor: nwse-resize; touch-action: none;
+  background: linear-gradient(135deg, transparent 50%, var(--accent) 50%); border-radius: 0 0 6px 0;
+}
 .ed-foot {
   display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap;
   padding: 8px 22px 12px; font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-soft);
@@ -350,6 +378,11 @@ button { cursor: pointer; }
         <div class="ed-head">
           <button id="back" class="btn back small" type="button">返回</button>
           <span class="spacer"></span>
+          <button id="addimg" class="btn small" type="button">加圖片</button>
+          <button id="share" class="btn small" type="button">分享</button>
+          <button id="addimg" class="btn small" type="button">加圖片</button>
+          <input id="imgfile" type="file" accept="image/*" multiple hidden>
+          <button id="share" class="btn small" type="button">分享</button>
           <button id="mode" class="btn small" type="button">檢視</button>
           <button id="pin" class="btn small" type="button">釘選</button>
           <button id="copy" class="btn small" type="button">複製內容</button>
@@ -366,6 +399,9 @@ button { cursor: pointer; }
           </div>
           <textarea id="body" class="body-in" placeholder="在這裡寫下內容。手機和電腦登入同一個帳號，內容會自動同步。"></textarea>
           <div id="view" class="view" hidden></div>
+          <div id="imgs" class="imgs" hidden></div>
+          <div id="img-msg" class="img-msg" hidden></div>
+          <input id="file" type="file" accept="image/*" multiple hidden>
         </div>
         <div class="ed-foot"><span id="count">0 字</span><span id="stamp"></span></div>
       </div>
@@ -376,6 +412,11 @@ button { cursor: pointer; }
       </div>
     </section>
   </div>
+</div>
+
+<div class="lb" id="lb" hidden>
+  <img id="lb-img" alt="圖片">
+  <div><a id="lb-dl" class="btn small" download="photo.jpg">下載圖片</a> <button id="lb-x" class="btn small" type="button">關閉</button></div>
 </div>
 
 <script type="module">
