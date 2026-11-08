@@ -251,14 +251,17 @@ button { cursor: pointer; }
 .toast { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 50; max-width: min(92vw, 560px);
   background: var(--ink); color: var(--paper); padding: 10px 16px; border-radius: 8px; font-size: 14px; box-shadow: 0 4px 16px rgba(0,0,0,.25); }
 .meta-row, .title-in { flex: none; }
-.imgs { flex: none; display: flex; flex-wrap: wrap; align-items: flex-start; }
+.imgs { flex: none; display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start; }
 .imgs:empty { display: none; }
 .img-frame {
-  position: relative; min-width: 60px; min-height: 60px; margin: 0 8px 8px 0;
+  position: relative; min-width: 60px; min-height: 60px; margin: 8px 0; max-width: 100%; white-space: normal;
   border: 1px solid var(--line); border-radius: 6px; background: var(--paper);
 }
 .img-frame img { display: block; width: 100%; height: auto; border-radius: 5px; -webkit-user-drag: none; }
 .img-frame .miss { display: block; padding: 18px 8px; font-size: 12px; color: var(--ink-soft); text-align: center; }
+.thumb { display: grid; gap: 3px; justify-items: center; font-size: 12px; color: var(--ink-soft); }
+.thumb img { height: 56px; max-width: 120px; width: auto; object-fit: cover; border-radius: 5px; border: 1px solid var(--line); background: var(--paper); }
+.thumb-acts { display: flex; gap: 4px; }
 .img-bar { position: absolute; top: 4px; right: 4px; display: flex; gap: 4px; }
 .img-bar button {
   border: 1px solid var(--line); background: var(--sheet); color: var(--ink);
@@ -390,9 +393,9 @@ button { cursor: pointer; }
             <label class="chk"><input id="done" type="checkbox"> 已完成</label>
             <a id="gcal" class="btn small" target="_blank" rel="noopener" hidden>加到 Google 日曆</a>
           </div>
-          <div id="imgs" class="imgs"></div>
           <textarea id="body" class="body-in" placeholder="在這裡寫下內容。手機和電腦登入同一個帳號，內容會自動同步。"></textarea>
           <div id="view" class="view" hidden></div>
+          <div id="imgs" class="imgs"></div>
         </div>
         <div class="ed-foot"><span id="count">0 字</span><span id="stamp"></span></div>
       </div>
@@ -874,21 +877,50 @@ function linkify(text, parent) {
   if (last < text.length) parent.appendChild(document.createTextNode(text.slice(last)));
 }
 let viewing = false;
-function renderView(text) {
+// 檢視模式：文字裡的 [圖1] 會換成對應的圖片框，沒被引用的圖片排在最後面
+const TOKEN_RE = /\[圖(\d+)\]/g;
+function renderView(n, text) {
   const v = $('view');
   v.textContent = '';
-  linkify(text || '', v);
+  if (!n) return;
+  ensureKeys(n);
+  text = text == null ? (n.body || '') : text;
+  const imgs = n.images || [];
+  const used = new Set();
+  let last = 0, m;
+  const addText = (t) => {
+    if (!t) return;
+    const span = document.createElement('span');
+    linkify(t, span);
+    v.appendChild(span);
+  };
+  TOKEN_RE.lastIndex = 0;
+  while ((m = TOKEN_RE.exec(text))) {
+    const info = imgs.find((i) => i.k === Number(m[1]) && !used.has(i.id));
+    if (!info) continue;
+    used.add(info.id);
+    let before = text.slice(last, m.index);
+    if (before.endsWith('\n')) before = before.slice(0, -1);
+    addText(before);
+    v.appendChild(buildFrame(n, info));
+    last = m.index + m[0].length;
+    if (text[last] === '\n') last++;
+  }
+  addText(text.slice(last));
+  imgs.filter((i) => !used.has(i.id)).forEach((info) => v.appendChild(buildFrame(n, info)));
 }
 function setViewing(on) {
-  if (on && (!byId(activeId) || !$('body').value)) on = false;
+  const n = byId(activeId);
+  if (on && (!n || (!$('body').value && !(n.images && n.images.length)))) on = false;
   viewing = on;
-  if (on) renderView($('body').value);
+  if (on) renderView(n, $('body').value);
   $('view').hidden = !on;
+  $('imgs').hidden = on;
   $('body').hidden = on;
   $('mode').textContent = on ? '編輯' : '檢視';
 }
 /* ---------- 圖片：貼上／選取 → 壓縮 → 存 Firestore → 框內拖曳等比縮放 ---------- */
-const sigImgs = (n) => JSON.stringify(((n && n.images) || []).map((i) => i.id + ':' + i.w));
+const sigImgs = (n) => JSON.stringify(((n && n.images) || []).map((i) => i.id + ':' + i.w + ':' + i.k));
 let bannerTimer = null;
 function flash(text, ms) {
   const t = $('toast');
@@ -931,7 +963,13 @@ async function compress(file) {
     throw new Error('too big');
   } finally { URL.revokeObjectURL(url); }
 }
-function setFrameW(fr, w) { fr.style.width = 'calc(' + w + '% - 8px)'; }
+function setFrameW(fr, w) { fr.style.width = w + '%'; }
+function ensureKeys(n) {
+  const a = (n && n.images) || [];
+  let mx = 0;
+  a.forEach((i) => { if (i.k > mx) mx = i.k; });
+  a.forEach((i) => { if (!i.k) i.k = ++mx; });
+}
 async function shareImage(id) {
   const d = await getImg(id);
   if (!d) return;
@@ -947,37 +985,128 @@ async function shareImage(id) {
 function deleteImage(noteId, imgId) {
   const n = byId(noteId);
   if (!n) return;
+  const info = (n.images || []).find((i) => i.id === imgId);
+  if (info && info.k) {
+    const body = n.body || '';
+    const re = new RegExp('(^|\\n)\\[圖' + info.k + '\\](?=\\n|$)');
+    let nb = body.replace(re, '');
+    if (nb === body) nb = body.replace('[圖' + info.k + ']', '');
+    n.body = nb;
+    if (activeId === noteId) $('body').value = nb;
+  }
   n.images = (n.images || []).filter((i) => i.id !== imgId);
   n.updated = Date.now();
   delete imgCache[imgId];
   if (mode === 'cloud') fb.fs.deleteDoc(imageRef(imgId)).catch(() => {});
-  if (activeId === noteId) { renderImages(n); updateMeta(n); }
+  if (activeId === noteId) refreshImageViews(n);
   renderList();
   persist(noteId);
 }
-function renderImages(n) {
+function refreshImageViews(n) {
+  renderThumbs(n);
+  if (viewing) renderView(n, n.body || '');
+  updateMeta(n);
+}
+// 把 [圖N] 插進游標位置（檢視模式時加在最後面）
+function insertToken(n, k) {
+  const tok = '[圖' + k + ']';
+  if (activeId === n.id) {
+    const ta = $('body');
+    const v = ta.value;
+    const pos = viewing ? v.length : (typeof ta.selectionStart === 'number' ? ta.selectionStart : v.length);
+    const pre = v.slice(0, pos), post = v.slice(pos);
+    const ins = (pre && !pre.endsWith('\n') ? '\n' : '') + tok + (post && !post.startsWith('\n') ? '\n' : '');
+    ta.value = pre + ins + post;
+    ta.selectionStart = ta.selectionEnd = pos + ins.length;
+    n.body = ta.value;
+  } else {
+    n.body = (n.body ? n.body + '\n' : '') + tok;
+  }
+  n.updated = Date.now();
+}
+// 檢視模式裡的圖片框：可分享、刪除、拖右下角等比縮放
+function buildFrame(n, info) {
+  const box = $('view');
+  const fr = document.createElement('div');
+  fr.className = 'img-frame';
+  setFrameW(fr, info.w || 60);
+  const im = document.createElement('img');
+  im.alt = '圖' + info.k;
+  im.draggable = false;
+  fr.appendChild(im);
+  getImg(info.id).then((d) => {
+    if (d) im.src = d;
+    else { const sp = document.createElement('span'); sp.className = 'miss'; sp.textContent = '圖片載入中，或在離線狀態下尚未下載'; fr.insertBefore(sp, im); im.remove(); }
+  });
+  const bar = document.createElement('div');
+  bar.className = 'img-bar';
+  const sh = document.createElement('button');
+  sh.type = 'button'; sh.textContent = '分享';
+  sh.addEventListener('click', () => shareImage(info.id));
+  const del = document.createElement('button');
+  del.type = 'button'; del.textContent = '刪除';
+  let t = null;
+  del.addEventListener('click', () => {
+    if (!del.classList.contains('armed')) {
+      del.classList.add('armed'); del.textContent = '確定刪除';
+      t = setTimeout(() => { del.classList.remove('armed'); del.textContent = '刪除'; }, 3000);
+      return;
+    }
+    clearTimeout(t);
+    deleteImage(n.id, info.id);
+  });
+  bar.appendChild(sh); bar.appendChild(del);
+  fr.appendChild(bar);
+  const grip = document.createElement('div');
+  grip.className = 'img-grip';
+  grip.title = '拖曳調整大小（等比例）';
+  grip.addEventListener('pointerdown', (e) => {
+    e.preventDefault(); e.stopPropagation();
+    grip.setPointerCapture(e.pointerId);
+    const cw = box.clientWidth, sx = e.clientX, sw = fr.getBoundingClientRect().width;
+    const move = (ev) => {
+      info.w = Math.round(Math.max(10, Math.min(100, (sw + ev.clientX - sx) / cw * 100)));
+      setFrameW(fr, info.w);
+    };
+    const up = () => {
+      grip.removeEventListener('pointermove', move);
+      grip.removeEventListener('pointerup', up);
+      grip.removeEventListener('pointercancel', up);
+      const cur = byId(n.id);
+      if (cur) { cur.updated = Date.now(); $('imgs').dataset.sig = sigImgs(cur); persist(cur.id); }
+    };
+    grip.addEventListener('pointermove', move);
+    grip.addEventListener('pointerup', up);
+    grip.addEventListener('pointercancel', up);
+  });
+  fr.appendChild(grip);
+  return fr;
+}
+// 編輯模式下方的縮圖列：知道每個 [圖N] 是哪一張，可再次插入或刪除
+function renderThumbs(n) {
   const box = $('imgs');
+  ensureKeys(n);
   box.dataset.sig = sigImgs(n);
   box.textContent = '';
   ((n && n.images) || []).forEach((info) => {
-    const fr = document.createElement('div');
-    fr.className = 'img-frame';
-    setFrameW(fr, info.w || 60);
+    const it = document.createElement('div');
+    it.className = 'thumb';
     const im = document.createElement('img');
-    im.alt = '圖片';
-    im.draggable = false;
-    fr.appendChild(im);
-    getImg(info.id).then((d) => {
-      if (d) im.src = d;
-      else { const s = document.createElement('span'); s.className = 'miss'; s.textContent = '圖片載入中，或在離線狀態下尚未下載'; fr.insertBefore(s, im); im.remove(); }
+    im.alt = '圖' + info.k;
+    getImg(info.id).then((d) => { if (d) im.src = d; });
+    const lb = document.createElement('span');
+    lb.className = 'thumb-k';
+    lb.textContent = '圖' + info.k;
+    const ins = document.createElement('button');
+    ins.type = 'button'; ins.className = 'note-x'; ins.textContent = '插入';
+    ins.addEventListener('click', () => {
+      const cur = byId(n.id); if (!cur) return;
+      insertToken(cur, info.k);
+      updateMeta(cur); renderList(); persist(cur.id);
+      $('body').focus();
     });
-    const bar = document.createElement('div');
-    bar.className = 'img-bar';
-    const sh = document.createElement('button');
-    sh.type = 'button'; sh.textContent = '分享';
-    sh.addEventListener('click', () => shareImage(info.id));
     const del = document.createElement('button');
-    del.type = 'button'; del.textContent = '刪除';
+    del.type = 'button'; del.className = 'note-x'; del.textContent = '刪除';
     let t = null;
     del.addEventListener('click', () => {
       if (!del.classList.contains('armed')) {
@@ -988,32 +1117,11 @@ function renderImages(n) {
       clearTimeout(t);
       deleteImage(n.id, info.id);
     });
-    bar.appendChild(sh); bar.appendChild(del);
-    fr.appendChild(bar);
-    const grip = document.createElement('div');
-    grip.className = 'img-grip';
-    grip.title = '拖曳調整大小（等比例）';
-    grip.addEventListener('pointerdown', (e) => {
-      e.preventDefault(); e.stopPropagation();
-      grip.setPointerCapture(e.pointerId);
-      const cw = box.clientWidth, sx = e.clientX, sw = fr.getBoundingClientRect().width + 8;
-      const move = (ev) => {
-        info.w = Math.round(Math.max(10, Math.min(100, (sw + ev.clientX - sx) / cw * 100)));
-        setFrameW(fr, info.w);
-      };
-      const up = () => {
-        grip.removeEventListener('pointermove', move);
-        grip.removeEventListener('pointerup', up);
-        grip.removeEventListener('pointercancel', up);
-        const cur = byId(n.id);
-        if (cur) { cur.updated = Date.now(); box.dataset.sig = sigImgs(cur); persist(cur.id); }
-      };
-      grip.addEventListener('pointermove', move);
-      grip.addEventListener('pointerup', up);
-      grip.addEventListener('pointercancel', up);
-    });
-    fr.appendChild(grip);
-    box.appendChild(fr);
+    const row = document.createElement('div');
+    row.className = 'thumb-acts';
+    row.appendChild(ins); row.appendChild(del);
+    it.appendChild(im); it.appendChild(lb); it.appendChild(row);
+    box.appendChild(it);
   });
 }
 async function addImages(files) {
@@ -1040,10 +1148,12 @@ async function addImages(files) {
       const now = byId(noteId);
       if (!now) { fb.fs.deleteDoc(imageRef(id)).catch(() => {}); break; }
       now.images = now.images || [];
-      now.images.push({ id, w: 60 });
-      now.updated = Date.now();
+      ensureKeys(now);
+      const k = now.images.reduce((m, i) => Math.max(m, i.k || 0), 0) + 1;
+      now.images.push({ id, w: 60, k });
+      insertToken(now, k);
       persist(noteId);
-      if (activeId === noteId) { renderImages(now); updateMeta(now); }
+      if (activeId === noteId) refreshImageViews(now);
       $('toast').hidden = true;
     } catch (e) {
       flash('圖片加入失敗：' + ((e && (e.code || e.message)) || '未知錯誤'), 12000);
@@ -1055,8 +1165,8 @@ async function addImages(files) {
 function fillEditor(n) {
   $('title').value = n.title || '';
   $('body').value = n.body || '';
-  renderView(n.body || '');
-  renderImages(n);
+  renderThumbs(n);
+  if (viewing) renderView(n, n.body || '');
   $('due').value = n.due ? toLocalInput(n.due) : '';
   $('done').checked = !!n.done;
   updateMeta(n);
@@ -1080,7 +1190,7 @@ function openNote(id) {
   if (!n) { showEditor(false); renderAll(); return; }
   showEditor(true);
   fillEditor(n);
-  setViewing(!!n.body);
+  setViewing(!!n.body || !!(n.images && n.images.length));
   $('main').setAttribute('data-view', 'edit');
   disarm();
   renderAll();
@@ -1105,7 +1215,8 @@ function clean(n) {
   if (n.kind === 'event') {
     return { kind: 'event', title: n.title || '', start: n.start || null, end: n.end || null, done: !!n.done, created: n.created || Date.now(), updated: n.updated || Date.now() };
   }
-  const images = Array.isArray(n.images) ? n.images.map((i) => ({ id: i.id, w: i.w || 60 })) : [];
+  ensureKeys(n);
+  const images = Array.isArray(n.images) ? n.images.map((i) => ({ id: i.id, w: i.w || 60, k: i.k || 0 })) : [];
   return { title: n.title || '', body: n.body || '', images, pinned: !!n.pinned, due: n.due || null, done: !!n.done, created: n.created || Date.now(), updated: n.updated || Date.now() };
 }
 function saveLocalAll() {
@@ -1256,7 +1367,7 @@ $('mode').addEventListener('click', () => {
   if (!viewing) $('body').focus();
 });
 $('view').addEventListener('click', (e) => {
-  if (e.target.closest('a')) return;
+  if (e.target.closest('a, .img-frame')) return;
   const sel = window.getSelection();
   if (sel && sel.toString()) return;
   setViewing(false);
