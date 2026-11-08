@@ -250,14 +250,6 @@ button { cursor: pointer; }
 .ed-body { overflow-y: auto; }
 .toast { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 50; max-width: min(92vw, 560px);
   background: var(--ink); color: var(--paper); padding: 10px 16px; border-radius: 8px; font-size: 14px; box-shadow: 0 4px 16px rgba(0,0,0,.25); }
-.imgs { display: flex; flex-wrap: wrap; gap: 8px; padding-top: 6px; flex: none; }
-.img-item { position: relative; }
-.img-item img { height: 96px; max-width: 170px; width: auto; object-fit: cover; border-radius: 6px; border: 1px solid var(--line); cursor: zoom-in; display: block; background: var(--paper); }
-.img-item .note-x { position: absolute; right: 4px; top: 4px; }
-.img-msg { font-size: 12px; color: var(--ink-soft); flex: none; }
-.lb { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.85); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; z-index: 50; padding: 16px; }
-.lb img { max-width: 100%; max-height: 80vh; border-radius: 6px; }
-.ed-body { overflow-y: auto; }
 .meta-row, .title-in { flex: none; }
 .imgs { flex: none; display: flex; flex-wrap: wrap; align-items: flex-start; }
 .imgs:empty { display: none; }
@@ -381,9 +373,7 @@ button { cursor: pointer; }
         <div class="ed-head">
           <button id="back" class="btn back small" type="button">返回</button>
           <span class="spacer"></span>
-          <button id="addimg" class="btn small" type="button">加圖片</button>
-          <button id="share" class="btn small" type="button">分享</button>
-          <button id="addimg" class="btn small" type="button">加圖片</button>
+          <button id="addimg" class="btn small" type="button">圖片</button>
           <input id="imgfile" type="file" accept="image/*" multiple hidden>
           <button id="share" class="btn small" type="button">分享</button>
           <button id="mode" class="btn small" type="button">檢視</button>
@@ -403,9 +393,6 @@ button { cursor: pointer; }
           <div id="imgs" class="imgs"></div>
           <textarea id="body" class="body-in" placeholder="在這裡寫下內容。手機和電腦登入同一個帳號，內容會自動同步。"></textarea>
           <div id="view" class="view" hidden></div>
-          <div id="imgs" class="imgs" hidden></div>
-          <div id="img-msg" class="img-msg" hidden></div>
-          <input id="file" type="file" accept="image/*" multiple hidden>
         </div>
         <div class="ed-foot"><span id="count">0 字</span><span id="stamp"></span></div>
       </div>
@@ -416,11 +403,6 @@ button { cursor: pointer; }
       </div>
     </section>
   </div>
-</div>
-
-<div class="lb" id="lb" hidden>
-  <img id="lb-img" alt="圖片">
-  <div><a id="lb-dl" class="btn small" download="photo.jpg">下載圖片</a> <button id="lb-x" class="btn small" type="button">關閉</button></div>
 </div>
 
 <script type="module">
@@ -1451,8 +1433,20 @@ function onSnapshot(snap) {
   renderAll();
   refreshStatus();
 }
+let snapRetry = 0, retryTimer = null;
+function subscribe() {
+  if (unsub) { unsub(); unsub = null; }
+  unsub = fb.fs.onSnapshot(fb.fs.collection(fdb, 'users', uid, 'items'), (snap) => { snapRetry = 0; onSnapshot(snap); }, onSnapError);
+}
 function onSnapError(err) {
   clearTimeout(loadTimer);
+  // 剛登入時偶爾會先被拒絕一次，自動重試最多 4 次，都失敗才顯示錯誤
+  if (snapRetry < 4 && mode === 'cloud') {
+    snapRetry++;
+    clearTimeout(retryTimer);
+    retryTimer = setTimeout(() => { if (mode === 'cloud') subscribe(); }, 1500 * snapRetry);
+    return;
+  }
   failed = true;
   if (err && err.code === 'permission-denied') showBanner('沒有權限讀取資料。請到 Firebase 的 Firestore「規則」分頁確認規則已發布。');
   else showBanner('與資料庫的連線中斷，請重新整理頁面。');
@@ -1468,9 +1462,11 @@ function startSync() {
   renderAll();
   refreshStatus();
   loadTimer = setTimeout(() => showBanner('連線比較慢，目前看到的內容可能不是最新的。'), 10000);
-  unsub = fb.fs.onSnapshot(fb.fs.collection(fdb, 'users', uid, 'items'), onSnapshot, onSnapError);
+  snapRetry = 0;
+  subscribe();
 }
 function stopSync() {
+  clearTimeout(retryTimer);
   if (unsub) { unsub(); unsub = null; }
   clearTimeout(saveTimer); saveTimer = null; saveId = null; dirty = false;
   clearTimeout(loadTimer);
