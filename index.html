@@ -248,6 +248,8 @@ button { cursor: pointer; }
 }
 .view a { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
 .ed-body { overflow-y: auto; }
+.toast { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 50; max-width: min(92vw, 560px);
+  background: var(--ink); color: var(--paper); padding: 10px 16px; border-radius: 8px; font-size: 14px; box-shadow: 0 4px 16px rgba(0,0,0,.25); }
 .imgs { display: flex; flex-wrap: wrap; gap: 8px; padding-top: 6px; flex: none; }
 .img-item { position: relative; }
 .img-item img { height: 96px; max-width: 170px; width: auto; object-fit: cover; border-radius: 6px; border: 1px solid var(--line); cursor: zoom-in; display: block; background: var(--paper); }
@@ -303,6 +305,7 @@ button { cursor: pointer; }
 </head>
 <body>
 
+<div class="toast" id="toast" role="status" hidden></div>
 <div class="center" id="boot">載入中…</div>
 
 <div class="center" id="login" hidden>
@@ -397,6 +400,7 @@ button { cursor: pointer; }
             <label class="chk"><input id="done" type="checkbox"> 已完成</label>
             <a id="gcal" class="btn small" target="_blank" rel="noopener" hidden>加到 Google 日曆</a>
           </div>
+          <div id="imgs" class="imgs"></div>
           <textarea id="body" class="body-in" placeholder="在這裡寫下內容。手機和電腦登入同一個帳號，內容會自動同步。"></textarea>
           <div id="view" class="view" hidden></div>
           <div id="imgs" class="imgs" hidden></div>
@@ -457,6 +461,9 @@ const byId = (id) => notes.find((n) => n.id === id) || null;
 const evById = (id) => events.find((e) => e.id === id) || null;
 const find = (id) => byId(id) || evById(id);
 const itemRef = (id) => fb.fs.doc(fdb, 'users', uid, 'items', id);
+const imageRef = (id) => fb.fs.doc(fdb, 'users', uid, 'images', id);
+const imgCache = {};   // 圖片編號 -> dataURL（圖片本體存在 images 子集合，筆記只記編號和寬度）
+const MAX_IMGS = 20;
 
 /* ---------- status ---------- */
 function setStatus(s, text) { $('status').setAttribute('data-s', s); $('status-text').textContent = text; }
@@ -580,7 +587,8 @@ function renderList() {
     top.appendChild(tm);
     const pv = document.createElement('div');
     pv.className = 'note-prev';
-    pv.textContent = (n.body || '').replace(/\s+/g, ' ').slice(0, 60) || '沒有內容';
+    const ic = n.images && n.images.length ? '[圖' + n.images.length + '] ' : '';
+    pv.textContent = ic + ((n.body || '').replace(/\s+/g, ' ').slice(0, 60) || (ic ? '' : '沒有內容'));
     b.appendChild(top);
     b.appendChild(pv);
     b.addEventListener('click', () => openNote(n.id));
@@ -897,10 +905,176 @@ function setViewing(on) {
   $('body').hidden = on;
   $('mode').textContent = on ? '編輯' : '檢視';
 }
+/* ---------- 圖片：貼上／選取 → 壓縮 → 存 Firestore → 框內拖曳等比縮放 ---------- */
+const sigImgs = (n) => JSON.stringify(((n && n.images) || []).map((i) => i.id + ':' + i.w));
+let bannerTimer = null;
+function flash(text, ms) {
+  const t = $('toast');
+  t.textContent = text; t.hidden = false;
+  clearTimeout(bannerTimer);
+  bannerTimer = setTimeout(() => { t.hidden = true; }, ms || 6000);
+}
+async function getImg(id) {
+  if (imgCache[id]) return imgCache[id];
+  try {
+    const s = await fb.fs.getDoc(imageRef(id));
+    if (s.exists()) { imgCache[id] = s.data().data; return imgCache[id]; }
+  } catch (e) {}
+  return null;
+}
+function dataToFile(dataUrl, name) {
+  const bin = atob(dataUrl.split(',')[1]);
+  const arr = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+  return new File([arr], name, { type: 'image/jpeg' });
+}
+// 把圖縮到最長邊 1280px 並轉成 JPEG，確保單張小於 Firestore 單一文件 1MB 的上限
+async function compress(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = url; });
+    let max = 1280, q = 0.82;
+    for (let k = 0; k < 7; k++) {
+      const sc = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+      const c = document.createElement('canvas');
+      c.width = Math.max(1, Math.round(img.naturalWidth * sc));
+      c.height = Math.max(1, Math.round(img.naturalHeight * sc));
+      const g = c.getContext('2d');
+      g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height);
+      g.drawImage(img, 0, 0, c.width, c.height);
+      const out = c.toDataURL('image/jpeg', q);
+      if (out.length <= 700000) return out;
+      max = Math.round(max * 0.8); q = Math.max(0.6, q - 0.05);
+    }
+    throw new Error('too big');
+  } finally { URL.revokeObjectURL(url); }
+}
+function setFrameW(fr, w) { fr.style.width = 'calc(' + w + '% - 8px)'; }
+async function shareImage(id) {
+  const d = await getImg(id);
+  if (!d) return;
+  const f = dataToFile(d, '圖片.jpg');
+  if (navigator.canShare && navigator.canShare({ files: [f] }) && navigator.share) {
+    try { await navigator.share({ files: [f] }); } catch (e) {}
+    return;
+  }
+  const a = document.createElement('a');
+  a.href = d; a.download = '圖片.jpg';
+  document.body.appendChild(a); a.click(); a.remove();
+}
+function deleteImage(noteId, imgId) {
+  const n = byId(noteId);
+  if (!n) return;
+  n.images = (n.images || []).filter((i) => i.id !== imgId);
+  n.updated = Date.now();
+  delete imgCache[imgId];
+  if (mode === 'cloud') fb.fs.deleteDoc(imageRef(imgId)).catch(() => {});
+  if (activeId === noteId) { renderImages(n); updateMeta(n); }
+  renderList();
+  persist(noteId);
+}
+function renderImages(n) {
+  const box = $('imgs');
+  box.dataset.sig = sigImgs(n);
+  box.textContent = '';
+  ((n && n.images) || []).forEach((info) => {
+    const fr = document.createElement('div');
+    fr.className = 'img-frame';
+    setFrameW(fr, info.w || 60);
+    const im = document.createElement('img');
+    im.alt = '圖片';
+    im.draggable = false;
+    fr.appendChild(im);
+    getImg(info.id).then((d) => {
+      if (d) im.src = d;
+      else { const s = document.createElement('span'); s.className = 'miss'; s.textContent = '圖片載入中，或在離線狀態下尚未下載'; fr.insertBefore(s, im); im.remove(); }
+    });
+    const bar = document.createElement('div');
+    bar.className = 'img-bar';
+    const sh = document.createElement('button');
+    sh.type = 'button'; sh.textContent = '分享';
+    sh.addEventListener('click', () => shareImage(info.id));
+    const del = document.createElement('button');
+    del.type = 'button'; del.textContent = '刪除';
+    let t = null;
+    del.addEventListener('click', () => {
+      if (!del.classList.contains('armed')) {
+        del.classList.add('armed'); del.textContent = '確定刪除';
+        t = setTimeout(() => { del.classList.remove('armed'); del.textContent = '刪除'; }, 3000);
+        return;
+      }
+      clearTimeout(t);
+      deleteImage(n.id, info.id);
+    });
+    bar.appendChild(sh); bar.appendChild(del);
+    fr.appendChild(bar);
+    const grip = document.createElement('div');
+    grip.className = 'img-grip';
+    grip.title = '拖曳調整大小（等比例）';
+    grip.addEventListener('pointerdown', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      grip.setPointerCapture(e.pointerId);
+      const cw = box.clientWidth, sx = e.clientX, sw = fr.getBoundingClientRect().width + 8;
+      const move = (ev) => {
+        info.w = Math.round(Math.max(10, Math.min(100, (sw + ev.clientX - sx) / cw * 100)));
+        setFrameW(fr, info.w);
+      };
+      const up = () => {
+        grip.removeEventListener('pointermove', move);
+        grip.removeEventListener('pointerup', up);
+        grip.removeEventListener('pointercancel', up);
+        const cur = byId(n.id);
+        if (cur) { cur.updated = Date.now(); box.dataset.sig = sigImgs(cur); persist(cur.id); }
+      };
+      grip.addEventListener('pointermove', move);
+      grip.addEventListener('pointerup', up);
+      grip.addEventListener('pointercancel', up);
+    });
+    fr.appendChild(grip);
+    box.appendChild(fr);
+  });
+}
+async function addImages(files) {
+  const n = byId(activeId);
+  if (!n) { flash('請先打開一則筆記，再加圖片。'); return; }
+  if (mode !== 'cloud' || !fb) { flash('目前是離線模式，無法存圖片，請先登入。'); return; }
+  const list = Array.from(files).filter((f) => /^image\//.test(f.type));
+  if (!list.length) { flash('沒有讀到圖片檔（收到 ' + files.length + ' 個檔案，格式不是圖片）。'); return; }
+  flash('處理圖片中…', 30000);
+  const noteId = n.id;
+  for (const f of list) {
+    const cur = byId(noteId);
+    if (!cur) break;
+    if ((cur.images || []).length >= MAX_IMGS) { flash('一則筆記最多 ' + MAX_IMGS + ' 張圖片。'); break; }
+    try {
+      setStatus('sync', '處理圖片中');
+      const data = await compress(f);
+      const id = newId('i');
+      await Promise.race([
+        fb.fs.setDoc(imageRef(id), { data, created: Date.now() }),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('寫入逾時，請檢查網路與 Firestore 規則')), 20000))
+      ]);
+      imgCache[id] = data;
+      const now = byId(noteId);
+      if (!now) { fb.fs.deleteDoc(imageRef(id)).catch(() => {}); break; }
+      now.images = now.images || [];
+      now.images.push({ id, w: 60 });
+      now.updated = Date.now();
+      persist(noteId);
+      if (activeId === noteId) { renderImages(now); updateMeta(now); }
+      $('toast').hidden = true;
+    } catch (e) {
+      flash('圖片加入失敗：' + ((e && (e.code || e.message)) || '未知錯誤'), 12000);
+    }
+  }
+  renderAll();
+  refreshStatus();
+}
 function fillEditor(n) {
   $('title').value = n.title || '';
   $('body').value = n.body || '';
   renderView(n.body || '');
+  renderImages(n);
   $('due').value = n.due ? toLocalInput(n.due) : '';
   $('done').checked = !!n.done;
   updateMeta(n);
@@ -915,7 +1089,7 @@ function updateMeta(n) {
   if (n.due) { g.hidden = false; g.href = gcal(n.title, n.due, null, n.body); } else g.hidden = true;
 }
 function pruneEmpty(exceptId) {
-  notes.filter((n) => n.id !== exceptId && !n.title && !n.body && !n.due).forEach((n) => removeItem(n.id));
+  notes.filter((n) => n.id !== exceptId && !n.title && !n.body && !n.due && !(n.images && n.images.length)).forEach((n) => removeItem(n.id));
 }
 function openNote(id) {
   if (activeId && activeId !== id) { flushSave(); pruneEmpty(id); }
@@ -949,7 +1123,8 @@ function clean(n) {
   if (n.kind === 'event') {
     return { kind: 'event', title: n.title || '', start: n.start || null, end: n.end || null, done: !!n.done, created: n.created || Date.now(), updated: n.updated || Date.now() };
   }
-  return { title: n.title || '', body: n.body || '', pinned: !!n.pinned, due: n.due || null, done: !!n.done, created: n.created || Date.now(), updated: n.updated || Date.now() };
+  const images = Array.isArray(n.images) ? n.images.map((i) => ({ id: i.id, w: i.w || 60 })) : [];
+  return { title: n.title || '', body: n.body || '', images, pinned: !!n.pinned, due: n.due || null, done: !!n.done, created: n.created || Date.now(), updated: n.updated || Date.now() };
 }
 function saveLocalAll() {
   try { localStorage.setItem(LS_KEY, JSON.stringify({ notes, events })); } catch (e) {}
@@ -988,6 +1163,9 @@ function removeItem(id) {
   const item = find(id);
   notes = notes.filter((n) => n.id !== id);
   events = events.filter((n) => n.id !== id);
+  if (mode === 'cloud' && item && Array.isArray(item.images)) {
+    item.images.forEach((i) => { delete imgCache[i.id]; fb.fs.deleteDoc(imageRef(i.id)).catch(() => {}); });
+  }
   if (mode === 'local') saveLocalAll();
   else if (mode === 'cloud') {
     if (item && item.persisted === false) return;
@@ -1055,6 +1233,42 @@ $('search').addEventListener('input', () => { query = $('search').value; renderL
 $('due').addEventListener('change', onDueChange);
 $('due-clear').addEventListener('click', () => { $('due').value = ''; onDueChange(); });
 $('sched').addEventListener('click', () => toggleSchedule(activeId));
+$('addimg').addEventListener('click', () => { flash('請選擇圖片…', 2500); $('imgfile').click(); });
+$('imgfile').addEventListener('change', () => { addImages($('imgfile').files); $('imgfile').value = ''; });
+document.addEventListener('paste', (e) => {
+  if (!activeId || $('editor-wrap').hidden) return;
+  if (e.target && e.target.tagName === 'INPUT') return;
+  const cd = e.clipboardData;
+  if (!cd) return;
+  const files = Array.from(cd.items || []).filter((it) => it.kind === 'file' && it.type.startsWith('image/')).map((it) => it.getAsFile()).filter(Boolean);
+  if (!files.length || cd.getData('text/plain')) return;
+  e.preventDefault();
+  addImages(files);
+});
+$('editor-wrap').addEventListener('dragover', (e) => { if (e.dataTransfer && Array.from(e.dataTransfer.types).includes('Files')) e.preventDefault(); });
+$('editor-wrap').addEventListener('drop', (e) => {
+  if (!e.dataTransfer || !e.dataTransfer.files.length) return;
+  e.preventDefault();
+  addImages(e.dataTransfer.files);
+});
+$('share').addEventListener('click', async () => {
+  const n = byId(activeId); if (!n) return;
+  const text = (n.title ? n.title + '\n\n' : '') + (n.body || '');
+  const data = { title: n.title || '筆記', text };
+  const btn = $('share');
+  try {
+    const files = [];
+    for (const i of (n.images || [])) {
+      const d = await getImg(i.id);
+      if (d) files.push(dataToFile(d, '圖片' + (files.length + 1) + '.jpg'));
+    }
+    if (files.length && navigator.canShare && navigator.canShare({ files })) data.files = files;
+    if (navigator.share) { await navigator.share(data); return; }
+  } catch (e) { if (e && e.name === 'AbortError') return; }
+  try { await navigator.clipboard.writeText(text); btn.textContent = '已複製文字'; }
+  catch (e) { btn.textContent = '此瀏覽器不支援分享'; }
+  setTimeout(() => { btn.textContent = '分享'; }, 1600);
+});
 $('mode').addEventListener('click', () => {
   setViewing(!viewing);
   if (!viewing) $('body').focus();
@@ -1214,7 +1428,7 @@ function onSnapshot(snap) {
   if (!snap.metadata.fromCache) { clearTimeout(loadTimer); $('banner').hidden = true; }
   if (!snap.metadata.fromCache && !cleaned) {
     cleaned = true;
-    notes.filter((n) => !n.title && !n.body && !n.due && n.id !== activeId).forEach((n) => removeItem(n.id));
+    notes.filter((n) => !n.title && !n.body && !n.due && !(n.images && n.images.length) && n.id !== activeId).forEach((n) => removeItem(n.id));
   }
   if (activeId) {
     const cur = byId(activeId);
@@ -1224,7 +1438,8 @@ function onSnapshot(snap) {
       $('main').setAttribute('data-view', 'list');
     } else if (!(dirty && saveId === activeId) && !snap.metadata.hasPendingWrites) {
       if ($('title').value !== (cur.title || '') || $('body').value !== (cur.body || '') ||
-          $('due').value !== (cur.due ? toLocalInput(cur.due) : '') || $('done').checked !== !!cur.done) fillEditor(cur);
+          $('due').value !== (cur.due ? toLocalInput(cur.due) : '') || $('done').checked !== !!cur.done ||
+          $('imgs').dataset.sig !== sigImgs(cur)) fillEditor(cur);
       else { updateMeta(cur); $('pin').textContent = cur.pinned ? '取消釘選' : '釘選'; }
     }
   }
